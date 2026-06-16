@@ -103,10 +103,11 @@ interface FormItem extends ReplenishmentItem {
 }
 
 export default function ReplenishmentManage() {
-  const { inventory, replenishmentOrders, warehouses, setInventory, setReplenishmentOrders } = useAppStore();
+  const { inventory, replenishmentOrders, warehouses, setInventory, setReplenishmentOrders, setWarehouses } = useAppStore();
   const [showForm, setShowForm] = useState(false);
   const [loading, setLoading] = useState(true);
   const [selectedWarehouse, setSelectedWarehouse] = useState<string>('');
+  const [formWarehouseId, setFormWarehouseId] = useState<string>('');
   const [formItems, setFormItems] = useState<FormItem[]>([]);
   const [scanningId, setScanningId] = useState<string | null>(null);
 
@@ -120,6 +121,7 @@ export default function ReplenishmentManage() {
         ]);
         setInventory(invData);
         setReplenishmentOrders(repData);
+        setWarehouses(whData);
         if (whData.length > 0) {
           setSelectedWarehouse(whData[0].id);
         }
@@ -128,28 +130,36 @@ export default function ReplenishmentManage() {
       }
     };
     fetchData();
-  }, [setInventory, setReplenishmentOrders]);
+  }, [setInventory, setReplenishmentOrders, setWarehouses]);
 
   const lowStockItems = inventory.filter((item) => item.availableQuantity < item.threshold);
 
   const activeWarehouses = warehouses.filter((w) => w.status === 'active');
 
   const handleQuickReplenish = (item: InventoryItem) => {
-    setShowForm(true);
-    setSelectedWarehouse(item.warehouseId);
+    setFormWarehouseId(item.warehouseId);
     setFormItems([
       {
         key: `item-${Date.now()}`,
         materialId: item.materialId,
         materialName: item.materialName,
         category: item.category,
-        quantity: Math.max(item.threshold - item.availableQuantity, item.threshold),
+        quantity: Math.max(item.threshold * 2 - item.availableQuantity, 1),
         unit: item.unit,
         unitPrice: item.unitPrice,
         currentStock: item.availableQuantity,
         threshold: item.threshold,
       },
     ]);
+    setShowForm(true);
+  };
+
+  const handleFormWarehouseChange = (newWarehouseId: string) => {
+    if (formItems.length > 0 && formWarehouseId !== newWarehouseId) {
+      const confirmed = window.confirm('切换仓库后，当前已添加的物资项将归属到新仓库，是否继续？');
+      if (!confirmed) return;
+    }
+    setFormWarehouseId(newWarehouseId);
   };
 
   const handleAddItem = () => {
@@ -180,23 +190,25 @@ export default function ReplenishmentManage() {
   };
 
   const handleSubmitForm = async () => {
-    if (!selectedWarehouse || formItems.length === 0) return;
+    if (!formWarehouseId || formItems.length === 0) return;
 
-    const warehouse = warehouses.find((w) => w.id === selectedWarehouse);
+    const warehouse = warehouses.find((w) => w.id === formWarehouseId);
     if (!warehouse) return;
 
     const items = formItems.map(({ key: _key, ...rest }) => rest);
 
     try {
       await api.createReplenishment({
-        warehouseId: selectedWarehouse,
+        warehouseId: formWarehouseId,
         warehouseName: warehouse.name,
         items,
       });
       const updated = await api.getReplenishmentOrders();
       setReplenishmentOrders(updated);
+      window.alert('补货申请已提交，等待审批');
       setShowForm(false);
       setFormItems([]);
+      setFormWarehouseId('');
     } catch (error) {
       console.error('创建补货申请失败:', error);
     }
@@ -235,7 +247,12 @@ export default function ReplenishmentManage() {
           <p className="text-sm text-slate-400">管理物资库存预警和补货申请流程</p>
         </div>
         <button
-          onClick={() => setShowForm(true)}
+          onClick={() => {
+            if (activeWarehouses.length > 0 && !formWarehouseId) {
+              setFormWarehouseId(activeWarehouses[0].id);
+            }
+            setShowForm(true);
+          }}
           className="inline-flex items-center gap-2 px-4 py-2.5 bg-alarm-blue hover:bg-alarm-blue/80 text-white rounded-lg transition-colors font-medium"
         >
           <Plus size={18} />
@@ -426,12 +443,12 @@ export default function ReplenishmentManage() {
               <div>
                 <label className="block text-sm text-slate-400 mb-2">申请仓库</label>
                 <select
-                  value={selectedWarehouse}
-                  onChange={(e) => setSelectedWarehouse(e.target.value)}
+                  value={formWarehouseId}
+                  onChange={(e) => handleFormWarehouseChange(e.target.value)}
                   className="w-full bg-surface-light border border-border-dark rounded-lg px-3 py-2.5 text-slate-200 text-sm focus:outline-none focus:border-alarm-blue"
                 >
                   {activeWarehouses.map((w: WarehouseType) => (
-                    <option key={w.id}>{w.name}</option>
+                    <option key={w.id} value={w.id}>{w.name}</option>
                   ))}
                 </select>
               </div>
@@ -548,7 +565,7 @@ export default function ReplenishmentManage() {
                 </button>
                 <button
                   onClick={handleSubmitForm}
-                  disabled={!selectedWarehouse || formItems.length === 0}
+                  disabled={!formWarehouseId || formItems.length === 0}
                   className="inline-flex items-center gap-2 px-5 py-2 bg-alarm-blue hover:bg-alarm-blue/80 text-white rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed text-sm font-medium"
                 >
                   提交申请

@@ -299,7 +299,7 @@ export default function Dashboard() {
     setLoading(true);
     try {
       const [stats, wh, transports, events] = await Promise.all([
-        api.getDashboardStats(),
+        api.getDashboardStats({ warehouseId: filters.warehouseId, category: filters.category }),
         api.getWarehouses(),
         api.getActiveTransports(),
         api.getEvents(),
@@ -314,7 +314,7 @@ export default function Dashboard() {
     } finally {
       setLoading(false);
     }
-  }, [setDashboard, setWarehouses, setTransportOrders, setEvents, updateTimestamp]);
+  }, [setDashboard, setWarehouses, setTransportOrders, setEvents, updateTimestamp, filters]);
 
   useEffect(() => {
     fetchData();
@@ -325,7 +325,7 @@ export default function Dashboard() {
   const handleExportReport = async () => {
     setExporting(true);
     try {
-      const report = await api.getMonthlyReport() as any;
+      const report = await api.getMonthlyReport({ warehouseId: filters.warehouseId, category: filters.category }) as any;
       const csvContent = generateReportCSV(report);
       const blob = new Blob(['\ufeff' + csvContent], { type: 'text/csv;charset=utf-8;' });
       const url = URL.createObjectURL(blob);
@@ -345,7 +345,15 @@ export default function Dashboard() {
     let csv = '';
     csv += `城市应急物资储备与调拨管理平台 - 月度分析报告\n`;
     csv += `报告周期: ${report.period || '2026年5月'}\n`;
-    csv += `生成时间: ${new Date().toLocaleString('zh-CN')}\n\n`;
+    csv += `生成时间: ${new Date().toLocaleString('zh-CN')}\n`;
+    if (filters.warehouseId) {
+      const wh = warehouses.find((w) => w.id === filters.warehouseId);
+      csv += `筛选仓库: ${wh?.name || filters.warehouseId}\n`;
+    }
+    if (filters.category) {
+      csv += `筛选类别: ${CATEGORY_LABELS[filters.category] || filters.category}\n`;
+    }
+    csv += '\n';
 
     csv += `=== 总体统计 ===\n`;
     csv += `指标,数值\n`;

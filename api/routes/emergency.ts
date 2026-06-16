@@ -6,6 +6,7 @@ import {
   warehouses,
   inventoryItems,
 } from '../data/mockData.js';
+import { lockInventoryForOrder } from '../services/scheduler.js';
 import type {
   MaterialDemand,
   DispatchPlan,
@@ -238,6 +239,17 @@ router.post('/dispatch', (req: Request, res: Response) => {
     createdAt: new Date().toISOString(),
     createdBy: '系统管理员',
   };
+
+  const lockSuccess = lockInventoryForOrder(newOrder);
+  if (!lockSuccess) {
+    return res.status(400).json({
+      code: 400,
+      message: '库存锁定失败，可用库存不足',
+      data: null,
+      timestamp: Date.now(),
+    });
+  }
+
   dispatchOrders.push(newOrder);
   res.json({
     code: 200,

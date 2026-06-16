@@ -99,6 +99,10 @@ export const api = {
   getTransportTrack: (id: string) => request<TransportOrder>(`/transport/${id}/track`),
   resolveAlert: (transportId: string, alertId: string) =>
     request(`/transport/${transportId}/alerts/${alertId}/resolve`, { method: 'POST' }),
+  signoffTransport: (id: string) =>
+    request<{ transport: TransportOrder; dispatchOrder: DispatchOrder | null }>(`/transport/${id}/signoff`, {
+      method: 'POST',
+    }),
 
   getReplenishmentOrders: () => request<ReplenishmentOrder[]>('/replenishment'),
   createReplenishment: (data: { warehouseId: string; warehouseName: string; items: ReplenishmentOrder['items'] }) =>
@@ -109,6 +113,18 @@ export const api = {
   receiveReplenishment: (id: string) =>
     request<ReplenishmentOrder>(`/replenishment/${id}/receive`, { method: 'POST' }),
 
-  getDashboardStats: () => request<DashboardStats>('/statistics/dashboard'),
-  getMonthlyReport: () => request('/statistics/monthly-report'),
+  getDashboardStats: (params?: { warehouseId?: string | null; category?: string | null }) => {
+    const query = new URLSearchParams();
+    if (params?.warehouseId) query.set('warehouseId', params.warehouseId);
+    if (params?.category) query.set('category', params.category);
+    const qs = query.toString();
+    return request<DashboardStats>(`/statistics/dashboard${qs ? `?${qs}` : ''}`);
+  },
+  getMonthlyReport: (params?: { warehouseId?: string | null; category?: string | null }) => {
+    const query = new URLSearchParams();
+    if (params?.warehouseId) query.set('warehouseId', params.warehouseId);
+    if (params?.category) query.set('category', params.category);
+    const qs = query.toString();
+    return request(`/statistics/monthly-report${qs ? `?${qs}` : ''}`);
+  },
 };

@@ -1,8 +1,40 @@
 import { Router } from 'express';
 import type { Request, Response } from 'express';
-import { transportOrders } from '../data/mockData.js';
+import { transportOrders, dispatchOrders } from '../data/mockData.js';
+import { deductInventoryForDelivery } from '../services/scheduler.js';
 
 const router = Router();
+
+router.post('/:id/signoff', (req: Request, res: Response) => {
+  const transport = transportOrders.find(t => t.id === req.params.id);
+  if (!transport) {
+    return res.status(404).json({
+      code: 404,
+      message: '运输记录不存在',
+      data: null,
+      timestamp: Date.now(),
+    });
+  }
+
+  transport.status = 'arrived';
+  transport.alerts.forEach(a => a.resolved = true);
+
+  const dispatch = dispatchOrders.find(d => d.id === transport.dispatchOrderId);
+  if (dispatch) {
+    deductInventoryForDelivery(dispatch);
+    dispatch.status = 'delivered';
+  }
+
+  res.json({
+    code: 200,
+    message: '扫码签收成功，库存已更新',
+    data: {
+      transport,
+      dispatchOrder: dispatch || null,
+    },
+    timestamp: Date.now(),
+  });
+});
 
 router.get('/active', (req: Request, res: Response) => {
   const active = transportOrders.filter(t => ['loading', 'in_transit', 'delayed'].includes(t.status));

@@ -19,6 +19,7 @@ import approvalRoutes from './routes/approval.js'
 import transportRoutes from './routes/transport.js'
 import replenishmentRoutes from './routes/replenishment.js'
 import statisticsRoutes from './routes/statistics.js'
+import { startScheduler } from './services/scheduler.js'
 
 const __filename = fileURLToPath(import.meta.url)
 const __dirname = path.dirname(__filename)
@@ -39,6 +40,8 @@ app.use('/api/approvals', approvalRoutes)
 app.use('/api/transport', transportRoutes)
 app.use('/api/replenishment', replenishmentRoutes)
 app.use('/api/statistics', statisticsRoutes)
+
+startScheduler()
 
 /**
  * health

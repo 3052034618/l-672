@@ -12,6 +12,8 @@ import {
   AlertCircle,
   Check,
   Navigation,
+  QrCode,
+  PackageCheck,
 } from 'lucide-react';
 import {
   LineChart,
@@ -274,9 +276,10 @@ function AlertTimeline({ alerts, onResolve }: { alerts: TransportAlert[]; onReso
 }
 
 export default function TransportMonitor() {
-  const { transportOrders, setTransportOrders } = useAppStore();
+  const { transportOrders, setTransportOrders, setInventory } = useAppStore();
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
+  const [signoffLoading, setSignoffLoading] = useState<string | null>(null);
 
   useEffect(() => {
     const fetchData = async () => {
@@ -303,6 +306,37 @@ export default function TransportMonitor() {
       setTransportOrders(updated);
     } catch (error) {
       console.error('处理告警失败:', error);
+    }
+  };
+
+  const fetchTransports = async () => {
+    try {
+      const data = await api.getActiveTransports();
+      setTransportOrders(data);
+    } catch (error) {
+      console.error('刷新运输数据失败:', error);
+    }
+  };
+
+  const signoffTransport = async (id: string, skipConfirm = false) => {
+    if (!skipConfirm) {
+      const confirmed = window.confirm(
+        '确认车辆已到达，签收后将扣减对应仓库库存，是否继续？'
+      );
+      if (!confirmed) return;
+    }
+    setSignoffLoading(id);
+    try {
+      await api.signoffTransport(id);
+      alert('扫码签收成功，库存已更新\n\n✅ 运输单状态已更新为"已到达"\n✅ 调拨单状态已更新为"已送达"\n✅ 对应仓库库存已扣减（锁定数量和实际数量同时减少）');
+      await fetchTransports();
+      const inventoryData = await api.getInventory();
+      setInventory(inventoryData);
+    } catch (error) {
+      console.error('签收失败:', error);
+      alert('签收失败: ' + (error instanceof Error ? error.message : '未知错误'));
+    } finally {
+      setSignoffLoading(null);
     }
   };
 
@@ -374,7 +408,7 @@ export default function TransportMonitor() {
                     <span className="truncate">{transport.destination.name}</span>
                   </div>
 
-                  <div className="flex items-center gap-4 text-xs">
+                  <div className="flex items-center gap-4 text-xs mb-3">
                     <div className="flex items-center gap-1">
                       <Thermometer size={12} className={transport.currentTemperature > transport.temperatureRange.max ? 'text-red-400' : 'text-alarm-orange'} />
                       <span className={transport.currentTemperature > transport.temperatureRange.max ? 'text-red-400' : 'text-slate-400'}>
@@ -394,6 +428,24 @@ export default function TransportMonitor() {
                       </div>
                     )}
                   </div>
+
+                  {['in_transit', 'arrived', 'delayed'].includes(transport.status) && (
+                    <button
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        signoffTransport(transport.id);
+                      }}
+                      disabled={signoffLoading === transport.id}
+                      className="w-full inline-flex items-center justify-center gap-2 px-3 py-2 text-sm font-medium bg-success-green/20 hover:bg-success-green/30 text-success-green rounded-lg transition-all border border-success-green/30 disabled:opacity-50 disabled:cursor-not-allowed"
+                    >
+                      {signoffLoading === transport.id ? (
+                        <div className="animate-spin w-4 h-4 border-2 border-success-green border-t-transparent rounded-full" />
+                      ) : (
+                        <QrCode size={16} />
+                      )}
+                      扫码签收
+                    </button>
+                  )}
                 </div>
               );
             })}
@@ -403,6 +455,36 @@ export default function TransportMonitor() {
         <div className="xl:col-span-8 space-y-6">
           {selectedTransport ? (
             <>
+              {['in_transit', 'arrived', 'delayed'].includes(selectedTransport.status) && (
+                <div className="card-glass rounded-xl p-5 border-success-green/40 bg-gradient-to-r from-success-green/10 to-transparent">
+                  <div className="flex items-center justify-between gap-4 flex-wrap">
+                    <div className="flex items-start gap-4">
+                      <div className="w-14 h-14 rounded-xl bg-success-green/20 flex items-center justify-center shrink-0">
+                        <PackageCheck size={28} className="text-success-green" />
+                      </div>
+                      <div>
+                        <h3 className="text-lg font-bold text-slate-100 mb-1">车辆已到达？</h3>
+                        <p className="text-sm text-slate-400">
+                          签收后将自动更新运输单状态、调拨单状态，并扣减对应仓库库存（锁定数量和实际数量同时减少）
+                        </p>
+                      </div>
+                    </div>
+                    <button
+                      onClick={() => signoffTransport(selectedTransport.id)}
+                      disabled={signoffLoading === selectedTransport.id}
+                      className="inline-flex items-center gap-3 px-6 py-3.5 text-base font-bold bg-success-green hover:bg-success-green/90 text-white rounded-xl transition-all shadow-lg shadow-success-green/30 hover:shadow-success-green/50 hover:scale-[1.02] disabled:opacity-50 disabled:cursor-not-allowed disabled:hover:scale-100"
+                    >
+                      {signoffLoading === selectedTransport.id ? (
+                        <div className="animate-spin w-5 h-5 border-2 border-white border-t-transparent rounded-full" />
+                      ) : (
+                        <QrCode size={22} />
+                      )}
+                      扫码签收并入库
+                    </button>
+                  </div>
+                </div>
+              )}
+
               <div className="card-glass rounded-xl p-5">
                 <div className="flex items-center justify-between mb-4">
                   <h2 className="text-lg font-semibold text-slate-200 flex items-center gap-2">

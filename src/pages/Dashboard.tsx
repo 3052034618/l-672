@@ -471,7 +471,7 @@ export default function Dashboard() {
           />
           <StatCard
             title="活跃仓库"
-            value={warehouses.filter((w) => w.status === 'active').length || dashboard?.totalWarehouses || 0}
+            value={dashboard?.totalWarehouses ?? 0}
             unit="个"
             icon={Warehouse}
             color="from-emerald-600/20 to-emerald-900/20"

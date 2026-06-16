@@ -12,55 +12,67 @@ import type { DashboardStats, Activity } from '../../shared/types.js';
 
 const router = Router();
 
-router.get('/dashboard', (req: Request, res: Response) => {
-  const { warehouseId, category } = req.query;
-  const filterWarehouseId = warehouseId as string | undefined;
-  const filterCategory = category as string | undefined;
-
+const buildFilterContext = (filterWarehouseId: string | undefined, filterCategory: string | undefined) => {
   const filteredInventory = inventoryItems.filter((item) => {
     if (filterWarehouseId && item.warehouseId !== filterWarehouseId) return false;
     if (filterCategory && item.category !== filterCategory) return false;
     return true;
   });
 
-  const filteredDispatches = dispatchOrders.filter((order) => {
-    if (filterWarehouseId) {
-      return order.items.some((it) => it.warehouseId === filterWarehouseId);
-    }
-    if (filterCategory) {
-      return order.items.some((it) => {
-        const inv = inventoryItems.find((i) => i.materialId === it.materialId);
-        return inv?.category === filterCategory;
-      });
+  const filteredDispatches = dispatchOrders.filter((order) =>
+    order.items.some((it) => {
+      if (filterWarehouseId && it.warehouseId !== filterWarehouseId) return false;
+      if (filterCategory) {
+        const inv = inventoryItems.find((i) => i.warehouseId === it.warehouseId && i.materialId === it.materialId);
+        if (!inv || inv.category !== filterCategory) return false;
+      }
+      return true;
+    })
+  );
+
+  const filteredDispatchIds = new Set(filteredDispatches.map((o) => o.id));
+
+  const filteredTransports = transportOrders.filter((t) => {
+    if (filterWarehouseId || filterCategory) {
+      return filteredDispatchIds.has(t.dispatchOrderId);
     }
     return true;
   });
 
-  const filteredTransports = transportOrders.filter((t) => {
-    if (!filterWarehouseId) return true;
-    return t.origin.name.includes('') || true;
+  const filteredReplenishments = replenishmentOrders.filter((r) => {
+    if (filterWarehouseId && r.warehouseId !== filterWarehouseId) return false;
+    if (filterCategory && !r.items.some((i) => i.category === filterCategory)) return false;
+    return true;
   });
 
-  const activeTransportIds = new Set(filteredTransports.map((t) => t.id));
-  const activeAlerts = transportOrders
-    .filter((t) => !filterWarehouseId || activeTransportIds.has(t.id))
-    .reduce((sum, t) => sum + t.alerts.filter((a) => !a.resolved).length, 0);
-
-  const totalInventory = filteredInventory.reduce((sum, i) => sum + i.quantity, 0);
   const activeWarehouseIds = new Set(filteredInventory.map((i) => i.warehouseId));
-  const totalWarehouses = filterWarehouseId
-    ? warehouses.filter((w) => w.id === filterWarehouseId && w.status === 'active').length
-    : warehouses.filter((w) => w.status === 'active' && activeWarehouseIds.has(w.id)).length;
+  const filteredWarehouses = warehouses.filter((w) => activeWarehouseIds.has(w.id));
 
-  const activeDispatches = filteredDispatches.filter((o) =>
+  return { filteredInventory, filteredDispatches, filteredDispatchIds, filteredTransports, filteredReplenishments, filteredWarehouses, activeWarehouseIds };
+};
+
+router.get('/dashboard', (req: Request, res: Response) => {
+  const { warehouseId, category } = req.query;
+  const filterWarehouseId = warehouseId as string | undefined;
+  const filterCategory = category as string | undefined;
+
+  const ctx = buildFilterContext(filterWarehouseId, filterCategory);
+
+  const totalInventory = ctx.filteredInventory.reduce((sum, i) => sum + i.quantity, 0);
+  const totalWarehouses = ctx.filteredWarehouses.filter((w) => w.status === 'active').length;
+
+  const activeDispatches = ctx.filteredDispatches.filter((o) =>
     ['locked', 'pending_approval', 'approved', 'in_transit'].includes(o.status)
   ).length;
 
   const pendingApprovals =
-    filteredDispatches.flatMap((o) => o.approvals.filter((a) => a.status === 'pending')).length +
-    replenishmentOrders
-      .filter((r) => !filterWarehouseId || r.warehouseId === filterWarehouseId)
-      .flatMap((o) => o.approvals.filter((a) => a.status === 'pending')).length;
+    ctx.filteredDispatches.flatMap((o) => o.approvals.filter((a) => a.status === 'pending')).length +
+    ctx.filteredReplenishments.flatMap((o) => o.approvals.filter((a) => a.status === 'pending')).length;
+
+  const activeAlerts = ctx.filteredTransports.reduce(
+    (sum, t) => sum + t.alerts.filter((a) => !a.resolved).length,
+    0
+  );
 
   const turnoverRate = (() => {
     const now = new Date();
@@ -69,17 +81,16 @@ router.get('/dashboard', (req: Request, res: Response) => {
       const date = new Date(now.getTime() - i * 86400000);
       const baseRate = 1.2 + Math.sin(i / 5) * 0.3;
       const variance = (Math.random() - 0.5) * 0.3;
-      const warehouseFactor = filterWarehouseId ? 0.85 : 1;
-      const categoryFactor = filterCategory ? 0.9 : 1;
+      const factor = (filterWarehouseId ? 0.85 : 1) * (filterCategory ? 0.9 : 1);
+      const rate = totalInventory > 0 ? Number((baseRate * factor + variance).toFixed(2)) : 0;
       data.push({
         date: `${date.getMonth() + 1}/${date.getDate()}`,
-        rate: Number((baseRate * warehouseFactor * categoryFactor + variance).toFixed(2)),
+        rate,
       });
     }
     return data;
   })();
 
-  const dispatchProgressMap = new Map<string, number>();
   const statusLabels: Record<string, string> = {
     locked: '库存锁定',
     pending_approval: '待审批',
@@ -87,7 +98,8 @@ router.get('/dashboard', (req: Request, res: Response) => {
     in_transit: '运输中',
     delivered: '已送达',
   };
-  filteredDispatches.forEach((o) => {
+  const dispatchProgressMap = new Map<string, number>();
+  ctx.filteredDispatches.forEach((o) => {
     const label = statusLabels[o.status] || o.status;
     dispatchProgressMap.set(label, (dispatchProgressMap.get(label) || 0) + 1);
   });
@@ -96,10 +108,7 @@ router.get('/dashboard', (req: Request, res: Response) => {
     count,
   }));
 
-  const warehouseList = filterWarehouseId
-    ? warehouses.filter((w) => w.id === filterWarehouseId)
-    : warehouses;
-  const responseTime = warehouseList
+  const responseTime = ctx.filteredWarehouses
     .filter((w) => w.status === 'active')
     .map((w) => {
       const baseTimes: Record<string, number> = {
@@ -116,36 +125,31 @@ router.get('/dashboard', (req: Request, res: Response) => {
     });
 
   const filteredActivities: Activity[] = recentActivities.filter((act) => {
-    if (filterWarehouseId) {
-      if (act.type === 'dispatch') {
-        const order = filteredDispatches.find((o) => act.title.includes(o.id) || act.title.includes(o.eventTitle));
-        return !!order;
-      }
-      if (act.type === 'replenishment') {
-        return replenishmentOrders.some((r) => r.warehouseId === filterWarehouseId);
-      }
-      if (act.type === 'transport' || act.type === 'alert') {
-        return activeTransportIds.size > 0;
-      }
+    if (act.type === 'dispatch' || act.type === 'approval') {
+      const matched = ctx.filteredDispatches.some(
+        (o) => act.title.includes(o.id) || act.title.includes(o.eventTitle) || act.description.includes(o.id)
+      );
+      if (!matched) return false;
     }
-    if (filterCategory) {
-      if (act.type === 'dispatch' || act.type === 'transport') {
-        return filteredDispatches.length > 0;
-      }
-      if (act.type === 'alert' && act.title.includes('库存')) {
-        return filteredInventory.some((i) => i.availableQuantity < i.threshold);
+    if (act.type === 'replenishment') {
+      const matched = ctx.filteredReplenishments.some(
+        (o) => act.title.includes(o.id) || act.description.includes(o.id)
+      );
+      if (!matched) return false;
+    }
+    if (act.type === 'transport' || act.type === 'alert') {
+      const matched = ctx.filteredTransports.some(
+        (t) => act.title.includes(t.vehicleNo) || act.description.includes(t.vehicleNo) || act.title.includes(t.id)
+      );
+      if (!matched) {
+        if (act.type === 'alert' && act.title.includes('库存')) {
+          return ctx.filteredInventory.some((i) => i.availableQuantity < i.threshold);
+        }
+        return false;
       }
     }
     return true;
   }).slice(0, 8);
-
-  const defaultProgress = [
-    { status: '库存锁定', count: 0 },
-    { status: '待审批', count: 0 },
-    { status: '审批通过', count: 0 },
-    { status: '运输中', count: 0 },
-    { status: '已送达', count: 0 },
-  ];
 
   res.json({
     code: 200,
@@ -157,7 +161,7 @@ router.get('/dashboard', (req: Request, res: Response) => {
       pendingApprovals,
       activeAlerts,
       turnoverRate,
-      dispatchProgress: dispatchProgress.length ? dispatchProgress : defaultProgress,
+      dispatchProgress,
       responseTime,
       recentActivities: filteredActivities,
     } as DashboardStats,
@@ -170,39 +174,17 @@ router.get('/monthly-report', (req: Request, res: Response) => {
   const filterWarehouseId = warehouseId as string | undefined;
   const filterCategory = category as string | undefined;
 
-  const filteredInventory = inventoryItems.filter((item) => {
-    if (filterWarehouseId && item.warehouseId !== filterWarehouseId) return false;
-    if (filterCategory && item.category !== filterCategory) return false;
-    return true;
-  });
-
-  const filteredDispatches = dispatchOrders.filter((order) => {
-    if (filterWarehouseId) {
-      return order.items.some((it) => it.warehouseId === filterWarehouseId);
-    }
-    if (filterCategory) {
-      return order.items.some((it) => {
-        const inv = inventoryItems.find((i) => i.materialId === it.materialId);
-        return inv?.category === filterCategory;
-      });
-    }
-    return true;
-  });
-
-  const filteredReplenishments = replenishmentOrders.filter((r) => {
-    if (filterWarehouseId) return r.warehouseId === filterWarehouseId;
-    if (filterCategory) return r.items.some((i) => i.category === filterCategory);
-    return true;
-  });
-
-  const filteredWarehouses = filterWarehouseId
-    ? warehouses.filter((w) => w.id === filterWarehouseId)
-    : warehouses;
+  const ctx = buildFilterContext(filterWarehouseId, filterCategory);
 
   const catLabels: Record<string, string> = {
     medical: '医疗物资', food: '食品物资', shelter: '帐篷物资',
     equipment: '设备器材', communication: '通讯设备', other: '其他物资',
   };
+
+  const activeAlerts = ctx.filteredTransports.reduce(
+    (sum, t) => sum + t.alerts.filter((a) => !a.resolved).length,
+    0
+  );
 
   const report = {
     period: '2026年5月',
@@ -214,16 +196,16 @@ router.get('/monthly-report', (req: Request, res: Response) => {
       category: filterCategory ? catLabels[filterCategory] || filterCategory : '全部',
     },
     summary: {
-      totalInventoryValue: filteredInventory.reduce((sum, i) => sum + i.quantity * i.unitPrice, 0),
-      totalWarehouses: filteredWarehouses.length,
-      totalDispatches: filteredDispatches.length,
-      completedDispatches: filteredDispatches.filter((o) => o.status === 'delivered').length,
-      totalReplenishments: filteredReplenishments.length,
-      completedReplenishments: filteredReplenishments.filter((o) => o.status === 'completed').length,
-      activeAlerts: transportOrders.reduce((sum, t) => sum + t.alerts.filter((a) => !a.resolved).length, 0),
+      totalInventoryValue: ctx.filteredInventory.reduce((sum, i) => sum + i.quantity * i.unitPrice, 0),
+      totalWarehouses: ctx.filteredWarehouses.length,
+      totalDispatches: ctx.filteredDispatches.length,
+      completedDispatches: ctx.filteredDispatches.filter((o) => o.status === 'delivered').length,
+      totalReplenishments: ctx.filteredReplenishments.length,
+      completedReplenishments: ctx.filteredReplenishments.filter((o) => o.status === 'completed').length,
+      activeAlerts,
     },
-    warehouseStats: filteredWarehouses.map((w) => {
-      const whInventory = filteredInventory.filter((i) => i.warehouseId === w.id);
+    warehouseStats: ctx.filteredWarehouses.map((w) => {
+      const whInventory = ctx.filteredInventory.filter((i) => i.warehouseId === w.id);
       return {
         id: w.id,
         name: w.name,
@@ -235,7 +217,7 @@ router.get('/monthly-report', (req: Request, res: Response) => {
     }),
     categoryStats: (filterCategory ? [filterCategory] : ['medical', 'food', 'shelter', 'equipment', 'communication', 'other'])
       .map((cat) => {
-        const items = filteredInventory.filter((i) => i.category === cat);
+        const items = ctx.filteredInventory.filter((i) => i.category === cat);
         if (items.length === 0) return null;
         return {
           category: cat,

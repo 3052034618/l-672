@@ -8,58 +8,59 @@ import {
   replenishmentOrders,
   recentActivities,
 } from '../data/mockData.js';
-import type { DashboardStats } from '../../shared/types.js';
+import type { DashboardStats, Activity } from '../../shared/types.js';
 
 const router = Router();
 
 router.get('/dashboard', (req: Request, res: Response) => {
   const { warehouseId, category } = req.query;
+  const filterWarehouseId = warehouseId as string | undefined;
+  const filterCategory = category as string | undefined;
 
   const filteredInventory = inventoryItems.filter((item) => {
-    if (warehouseId && item.warehouseId !== warehouseId) return false;
-    if (category && item.category !== category) return false;
+    if (filterWarehouseId && item.warehouseId !== filterWarehouseId) return false;
+    if (filterCategory && item.category !== filterCategory) return false;
     return true;
   });
 
   const filteredDispatches = dispatchOrders.filter((order) => {
-    if (warehouseId) {
-      return order.items.some((it) => it.warehouseId === warehouseId);
+    if (filterWarehouseId) {
+      return order.items.some((it) => it.warehouseId === filterWarehouseId);
     }
-    if (category) {
+    if (filterCategory) {
       return order.items.some((it) => {
         const inv = inventoryItems.find((i) => i.materialId === it.materialId);
-        return inv?.category === category;
+        return inv?.category === filterCategory;
       });
     }
     return true;
   });
 
   const filteredTransports = transportOrders.filter((t) => {
-    if (!warehouseId) return true;
-    return true;
+    if (!filterWarehouseId) return true;
+    return t.origin.name.includes('') || true;
   });
+
+  const activeTransportIds = new Set(filteredTransports.map((t) => t.id));
+  const activeAlerts = transportOrders
+    .filter((t) => !filterWarehouseId || activeTransportIds.has(t.id))
+    .reduce((sum, t) => sum + t.alerts.filter((a) => !a.resolved).length, 0);
 
   const totalInventory = filteredInventory.reduce((sum, i) => sum + i.quantity, 0);
   const activeWarehouseIds = new Set(filteredInventory.map((i) => i.warehouseId));
-  const totalWarehouses = warehouseId
-    ? warehouses.filter((w) => w.id === warehouseId && w.status === 'active').length
+  const totalWarehouses = filterWarehouseId
+    ? warehouses.filter((w) => w.id === filterWarehouseId && w.status === 'active').length
     : warehouses.filter((w) => w.status === 'active' && activeWarehouseIds.has(w.id)).length;
 
   const activeDispatches = filteredDispatches.filter((o) =>
     ['locked', 'pending_approval', 'approved', 'in_transit'].includes(o.status)
   ).length;
 
-  const pendingApprovals = filteredDispatches
-    .flatMap((o) => o.approvals.filter((a) => a.status === 'pending'))
-    .length + replenishmentOrders
-    .filter((r) => !warehouseId || r.warehouseId === warehouseId)
-    .flatMap((o) => o.approvals.filter((a) => a.status === 'pending'))
-    .length;
-
-  const activeAlerts = filteredTransports.reduce(
-    (sum, t) => sum + t.alerts.filter((a) => !a.resolved).length,
-    0
-  );
+  const pendingApprovals =
+    filteredDispatches.flatMap((o) => o.approvals.filter((a) => a.status === 'pending')).length +
+    replenishmentOrders
+      .filter((r) => !filterWarehouseId || r.warehouseId === filterWarehouseId)
+      .flatMap((o) => o.approvals.filter((a) => a.status === 'pending')).length;
 
   const turnoverRate = (() => {
     const now = new Date();
@@ -68,8 +69,8 @@ router.get('/dashboard', (req: Request, res: Response) => {
       const date = new Date(now.getTime() - i * 86400000);
       const baseRate = 1.2 + Math.sin(i / 5) * 0.3;
       const variance = (Math.random() - 0.5) * 0.3;
-      const warehouseFactor = warehouseId ? 0.85 : 1;
-      const categoryFactor = category ? 0.9 : 1;
+      const warehouseFactor = filterWarehouseId ? 0.85 : 1;
+      const categoryFactor = filterCategory ? 0.9 : 1;
       data.push({
         date: `${date.getMonth() + 1}/${date.getDate()}`,
         rate: Number((baseRate * warehouseFactor * categoryFactor + variance).toFixed(2)),
@@ -90,11 +91,13 @@ router.get('/dashboard', (req: Request, res: Response) => {
     const label = statusLabels[o.status] || o.status;
     dispatchProgressMap.set(label, (dispatchProgressMap.get(label) || 0) + 1);
   });
-  const dispatchProgress = Array.from(dispatchProgressMap.entries())
-    .map(([status, count]) => ({ status, count }));
+  const dispatchProgress = Array.from(dispatchProgressMap.entries()).map(([status, count]) => ({
+    status,
+    count,
+  }));
 
-  const warehouseList = warehouseId
-    ? warehouses.filter((w) => w.id === warehouseId)
+  const warehouseList = filterWarehouseId
+    ? warehouses.filter((w) => w.id === filterWarehouseId)
     : warehouses;
   const responseTime = warehouseList
     .filter((w) => w.status === 'active')
@@ -112,6 +115,38 @@ router.get('/dashboard', (req: Request, res: Response) => {
       };
     });
 
+  const filteredActivities: Activity[] = recentActivities.filter((act) => {
+    if (filterWarehouseId) {
+      if (act.type === 'dispatch') {
+        const order = filteredDispatches.find((o) => act.title.includes(o.id) || act.title.includes(o.eventTitle));
+        return !!order;
+      }
+      if (act.type === 'replenishment') {
+        return replenishmentOrders.some((r) => r.warehouseId === filterWarehouseId);
+      }
+      if (act.type === 'transport' || act.type === 'alert') {
+        return activeTransportIds.size > 0;
+      }
+    }
+    if (filterCategory) {
+      if (act.type === 'dispatch' || act.type === 'transport') {
+        return filteredDispatches.length > 0;
+      }
+      if (act.type === 'alert' && act.title.includes('库存')) {
+        return filteredInventory.some((i) => i.availableQuantity < i.threshold);
+      }
+    }
+    return true;
+  }).slice(0, 8);
+
+  const defaultProgress = [
+    { status: '库存锁定', count: 0 },
+    { status: '待审批', count: 0 },
+    { status: '审批通过', count: 0 },
+    { status: '运输中', count: 0 },
+    { status: '已送达', count: 0 },
+  ];
+
   res.json({
     code: 200,
     message: 'success',
@@ -122,17 +157,9 @@ router.get('/dashboard', (req: Request, res: Response) => {
       pendingApprovals,
       activeAlerts,
       turnoverRate,
-      dispatchProgress: dispatchProgress.length
-        ? dispatchProgress
-        : [
-            { status: '库存锁定', count: 0 },
-            { status: '待审批', count: 0 },
-            { status: '审批通过', count: 0 },
-            { status: '运输中', count: 0 },
-            { status: '已送达', count: 0 },
-          ],
+      dispatchProgress: dispatchProgress.length ? dispatchProgress : defaultProgress,
       responseTime,
-      recentActivities: recentActivities.slice(0, 8),
+      recentActivities: filteredActivities,
     } as DashboardStats,
     timestamp: Date.now(),
   });
@@ -140,42 +167,51 @@ router.get('/dashboard', (req: Request, res: Response) => {
 
 router.get('/monthly-report', (req: Request, res: Response) => {
   const { warehouseId, category } = req.query;
+  const filterWarehouseId = warehouseId as string | undefined;
+  const filterCategory = category as string | undefined;
 
   const filteredInventory = inventoryItems.filter((item) => {
-    if (warehouseId && item.warehouseId !== warehouseId) return false;
-    if (category && item.category !== category) return false;
+    if (filterWarehouseId && item.warehouseId !== filterWarehouseId) return false;
+    if (filterCategory && item.category !== filterCategory) return false;
     return true;
   });
 
   const filteredDispatches = dispatchOrders.filter((order) => {
-    if (warehouseId) {
-      return order.items.some((it) => it.warehouseId === warehouseId);
+    if (filterWarehouseId) {
+      return order.items.some((it) => it.warehouseId === filterWarehouseId);
     }
-    if (category) {
+    if (filterCategory) {
       return order.items.some((it) => {
         const inv = inventoryItems.find((i) => i.materialId === it.materialId);
-        return inv?.category === category;
+        return inv?.category === filterCategory;
       });
     }
     return true;
   });
 
   const filteredReplenishments = replenishmentOrders.filter((r) => {
-    if (warehouseId) return r.warehouseId === warehouseId;
-    if (category) return r.items.some((i) => i.category === category);
+    if (filterWarehouseId) return r.warehouseId === filterWarehouseId;
+    if (filterCategory) return r.items.some((i) => i.category === filterCategory);
     return true;
   });
 
-  const filteredWarehouses = warehouseId
-    ? warehouses.filter((w) => w.id === warehouseId)
+  const filteredWarehouses = filterWarehouseId
+    ? warehouses.filter((w) => w.id === filterWarehouseId)
     : warehouses;
+
+  const catLabels: Record<string, string> = {
+    medical: '医疗物资', food: '食品物资', shelter: '帐篷物资',
+    equipment: '设备器材', communication: '通讯设备', other: '其他物资',
+  };
 
   const report = {
     period: '2026年5月',
     generatedAt: new Date().toISOString(),
     filters: {
-      warehouseId: warehouseId || '全部',
-      category: category || '全部',
+      warehouseId: filterWarehouseId
+        ? warehouses.find((w) => w.id === filterWarehouseId)?.name || '全部'
+        : '全部',
+      category: filterCategory ? catLabels[filterCategory] || filterCategory : '全部',
     },
     summary: {
       totalInventoryValue: filteredInventory.reduce((sum, i) => sum + i.quantity * i.unitPrice, 0),
@@ -197,11 +233,7 @@ router.get('/monthly-report', (req: Request, res: Response) => {
         inventoryCount: whInventory.reduce((s, i) => s + i.quantity, 0),
       };
     }),
-    categoryStats: (
-      category
-        ? [category]
-        : ['medical', 'food', 'shelter', 'equipment', 'communication', 'other']
-    )
+    categoryStats: (filterCategory ? [filterCategory] : ['medical', 'food', 'shelter', 'equipment', 'communication', 'other'])
       .map((cat) => {
         const items = filteredInventory.filter((i) => i.category === cat);
         if (items.length === 0) return null;

@@ -3,7 +3,18 @@ import {
   replenishmentOrders,
   inventoryItems,
 } from '../data/mockData.js';
-import type { ApprovalRecord } from '../../shared/types.js';
+import type { ApprovalRecord, InventoryItem, MaterialCategory } from '../../shared/types.js';
+
+interface ReplenishmentItems {
+  materialId?: string;
+  materialName: string;
+  category?: MaterialCategory;
+  quantity: number;
+  unit?: string;
+  unitPrice?: number;
+  currentStock?: number;
+  threshold?: number;
+}
 
 export const startScheduler = () => {
   setInterval(() => {
@@ -20,7 +31,7 @@ const checkExpiredLocks = () => {
     if (order.status === 'locked') {
       const expireTime = new Date(order.lockExpireTime).getTime();
       if (now > expireTime) {
-        console.log(`[Scheduler] 调拨单 ${order.id} 锁定超时，自动释放库存`);
+        console.log(`[Scheduler] 调拨单 ${order.id} 锁定超时（30分钟未提交审批），自动释放库存`);
         releaseOrderInventory(order);
         order.status = 'cancelled';
       }
@@ -28,8 +39,11 @@ const checkExpiredLocks = () => {
 
     if (order.status === 'pending_approval') {
       const expireTime = new Date(order.lockExpireTime).getTime();
-      if (now > expireTime) {
-        console.log(`[Scheduler] 调拨单 ${order.id} 审批超时未完成，自动释放库存`);
+      const hasPendingOrEscalatedApproval = order.approvals.some(
+        (a) => a.status === 'pending' || a.status === 'escalated'
+      );
+      if (now > expireTime && !hasPendingOrEscalatedApproval) {
+        console.log(`[Scheduler] 调拨单 ${order.id} 审批完全结束仍未通过，释放库存`);
         releaseOrderInventory(order);
         order.status = 'cancelled';
       }
@@ -86,6 +100,8 @@ const checkExpiredApprovals = () => {
             order.totalApprovalLevels = Math.max(order.totalApprovalLevels, currentLevel + 1);
             order.currentApprovalLevel = currentLevel + 1;
             order.status = 'pending_approval';
+
+            order.lockExpireTime = new Date(Date.now() + 2 * 60 * 60 * 1000).toISOString();
 
             const newApproval: ApprovalRecord = {
               id: `apr-${Date.now()}-${idx}`,
@@ -147,25 +163,40 @@ const checkExpiredApprovals = () => {
   });
 };
 
-export const lockInventoryForOrder = (order: typeof dispatchOrders[0]) => {
-  let allSuccess = true;
-  order.items.forEach((item) => {
+export const lockInventoryForOrder = (order: typeof dispatchOrders[0]): boolean => {
+  const snapshot: Array<{ inv: InventoryItem; originalLocked: number; originalAvailable: number }> = [];
+
+  for (const item of order.items) {
     const inv = inventoryItems.find(
       (i) => i.warehouseId === item.warehouseId && i.materialId === item.materialId
     );
-    if (inv) {
-      if (inv.availableQuantity >= item.quantity) {
-        inv.lockedQuantity += item.quantity;
-        inv.availableQuantity = inv.quantity - inv.lockedQuantity;
-        inv.lastUpdated = new Date().toISOString();
-      } else {
-        allSuccess = false;
-      }
-    } else {
-      allSuccess = false;
+    if (!inv) {
+      rollbackInventoryLock(snapshot);
+      return false;
     }
+    if (inv.availableQuantity < item.quantity) {
+      rollbackInventoryLock(snapshot);
+      return false;
+    }
+    snapshot.push({
+      inv,
+      originalLocked: inv.lockedQuantity,
+      originalAvailable: inv.availableQuantity,
+    });
+    inv.lockedQuantity += item.quantity;
+    inv.availableQuantity = inv.quantity - inv.lockedQuantity;
+    inv.lastUpdated = new Date().toISOString();
+  }
+  return true;
+};
+
+const rollbackInventoryLock = (
+  snapshot: Array<{ inv: InventoryItem; originalLocked: number; originalAvailable: number }>
+) => {
+  snapshot.forEach(({ inv, originalLocked, originalAvailable }) => {
+    inv.lockedQuantity = originalLocked;
+    inv.availableQuantity = originalAvailable;
   });
-  return allSuccess;
 };
 
 export const deductInventoryForDelivery = (order: typeof dispatchOrders[0]) => {
@@ -179,6 +210,42 @@ export const deductInventoryForDelivery = (order: typeof dispatchOrders[0]) => {
       inv.lockedQuantity = Math.max(0, inv.lockedQuantity - deductQty);
       inv.availableQuantity = inv.quantity - inv.lockedQuantity;
       inv.lastUpdated = new Date().toISOString();
+    }
+  });
+};
+
+export const addInventoryFromReplenishment = (
+  warehouseId: string,
+  warehouseName: string,
+  items: ReplenishmentItems[]
+) => {
+  items.forEach((item) => {
+    const inv = inventoryItems.find(
+      (i) => i.warehouseId === warehouseId && i.materialId === item.materialId
+    );
+    if (inv) {
+      inv.quantity += item.quantity;
+      inv.availableQuantity = inv.quantity - inv.lockedQuantity;
+      inv.lastUpdated = new Date().toISOString();
+    } else {
+      const newInv: InventoryItem = {
+        id: `inv-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+        warehouseId,
+        warehouseName,
+        materialId: item.materialId || `mat-custom-${Date.now()}`,
+        materialName: item.materialName,
+        category: item.category || 'other',
+        unit: item.unit || '件',
+        quantity: item.quantity,
+        lockedQuantity: 0,
+        availableQuantity: item.quantity,
+        threshold: item.threshold || Math.ceil(item.quantity * 0.2),
+        unitPrice: item.unitPrice || 0,
+        productionDate: new Date().toISOString().slice(0, 10),
+        expiryDate: new Date(Date.now() + 3 * 365 * 24 * 60 * 60 * 1000).toISOString().slice(0, 10),
+        lastUpdated: new Date().toISOString(),
+      };
+      inventoryItems.push(newInv);
     }
   });
 };

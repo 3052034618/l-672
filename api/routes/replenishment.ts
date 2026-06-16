@@ -1,7 +1,8 @@
 import { Router } from 'express';
 import type { Request, Response } from 'express';
-import { replenishmentOrders, inventoryItems } from '../data/mockData.js';
+import { replenishmentOrders } from '../data/mockData.js';
 import type { ReplenishmentOrder } from '../../shared/types.js';
+import { addInventoryFromReplenishment } from '../services/scheduler.js';
 
 const router = Router();
 
@@ -18,8 +19,9 @@ router.post('/', (req: Request, res: Response) => {
   const { warehouseId, warehouseName, items } = req.body;
   const totalAmount = items.reduce((s: number, i: { quantity: number; unitPrice: number }) => s + i.quantity * i.unitPrice, 0);
 
+  const orderId = `ro-${Date.now()}`;
   const newOrder: ReplenishmentOrder = {
-    id: `ro-${Date.now()}`,
+    id: orderId,
     warehouseId,
     warehouseName,
     items,
@@ -30,7 +32,7 @@ router.post('/', (req: Request, res: Response) => {
     approvals: [
       {
         id: `rapr-${Date.now()}`,
-        orderId: `ro-${Date.now()}`,
+        orderId,
         orderType: 'replenishment',
         level: 1,
         totalLevels: 3,
@@ -66,20 +68,13 @@ router.post('/:id/receive', (req: Request, res: Response) => {
     });
   }
 
-  order.items.forEach(item => {
-    const inv = inventoryItems.find(i => i.warehouseId === order.warehouseId && i.materialId === item.materialId);
-    if (inv) {
-      inv.quantity += item.quantity;
-      inv.availableQuantity = inv.quantity - inv.lockedQuantity;
-      inv.lastUpdated = new Date().toISOString();
-    }
-  });
+  addInventoryFromReplenishment(order.warehouseId, order.warehouseName, order.items as any);
 
   order.status = 'completed';
 
   res.json({
     code: 200,
-    message: '物资已签收入库',
+    message: '物资已签收入库，库存已更新',
     data: order,
     timestamp: Date.now(),
   });

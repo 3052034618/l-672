@@ -65,11 +65,17 @@ export default function ApprovalCenter() {
 
   useEffect(() => {
     loadData();
+    const autoTimer = setInterval(() => {
+      if (document.visibilityState === 'visible') {
+        loadData(false);
+      }
+    }, 5000);
+    return () => clearInterval(autoTimer);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  const loadData = async () => {
-    setLoading((s) => ({ ...s, pending: true, refresh: true }));
+  const loadData = async (showSpinner = true) => {
+    if (showSpinner) setLoading((s) => ({ ...s, pending: true, refresh: true }));
     try {
       const [pending, dispatches, replenishments] = await Promise.all([
         api.getPendingApprovals(),
@@ -80,7 +86,7 @@ export default function ApprovalCenter() {
       setDispatchOrders(dispatches);
       setReplenishmentOrders(replenishments);
     } finally {
-      setLoading((s) => ({ ...s, pending: false, refresh: false }));
+      if (showSpinner) setLoading((s) => ({ ...s, pending: false, refresh: false }));
     }
   };
 
@@ -165,7 +171,7 @@ export default function ApprovalCenter() {
           <p className="text-sm text-slate-400 mt-1">管理调拨与补货申请审批流程</p>
         </div>
         <button
-          onClick={loadData}
+          onClick={() => loadData(true)}
           disabled={loading.refresh}
           className="flex items-center gap-2 px-4 py-2 rounded-lg bg-slate-800/60 border border-slate-700 text-slate-300 hover:bg-slate-700/60 transition-all disabled:opacity-50"
         >

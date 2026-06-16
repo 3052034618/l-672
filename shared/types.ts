@@ -202,6 +202,9 @@ export interface DashboardStats {
   dispatchProgress: { status: string; count: number }[];
   responseTime: { warehouse: string; avgTime: number }[];
   recentActivities: Activity[];
+  filteredWarehouses?: Warehouse[];
+  filteredTransports?: TransportOrder[];
+  filteredEvents?: EmergencyEvent[];
 }
 
 export const CATEGORY_LABELS: Record<MaterialCategory, string> = {

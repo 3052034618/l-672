@@ -7,6 +7,7 @@ import {
   transportOrders,
   replenishmentOrders,
   recentActivities,
+  emergencyEvents,
 } from '../data/mockData.js';
 import type { DashboardStats, Activity } from '../../shared/types.js';
 
@@ -32,11 +33,27 @@ const buildFilterContext = (filterWarehouseId: string | undefined, filterCategor
 
   const filteredDispatchIds = new Set(filteredDispatches.map((o) => o.id));
 
+  const warehouseNameToId = new Map(warehouses.map((w) => [w.name, w.id]));
+
   const filteredTransports = transportOrders.filter((t) => {
-    if (filterWarehouseId || filterCategory) {
-      return filteredDispatchIds.has(t.dispatchOrderId);
+    if (!filterWarehouseId && !filterCategory) return true;
+
+    const originWarehouseId = warehouseNameToId.get(t.origin.name);
+    if (!originWarehouseId) return false;
+
+    if (filterWarehouseId && originWarehouseId !== filterWarehouseId) return false;
+
+    if (filterCategory) {
+      const relatedDispatch = dispatchOrders.find((d) => d.id === t.dispatchOrderId);
+      if (!relatedDispatch) return false;
+      return relatedDispatch.items.some((it) => {
+        if (it.warehouseId !== originWarehouseId) return false;
+        const inv = inventoryItems.find((i) => i.warehouseId === it.warehouseId && i.materialId === it.materialId);
+        return inv?.category === filterCategory;
+      });
     }
-    return true;
+
+    return filteredDispatchIds.has(t.dispatchOrderId);
   });
 
   const filteredReplenishments = replenishmentOrders.filter((r) => {
@@ -48,7 +65,28 @@ const buildFilterContext = (filterWarehouseId: string | undefined, filterCategor
   const activeWarehouseIds = new Set(filteredInventory.map((i) => i.warehouseId));
   const filteredWarehouses = warehouses.filter((w) => activeWarehouseIds.has(w.id));
 
-  return { filteredInventory, filteredDispatches, filteredDispatchIds, filteredTransports, filteredReplenishments, filteredWarehouses, activeWarehouseIds };
+  const relatedDispatchEvents = new Set(filteredDispatches.map((d) => d.eventId));
+  const relatedTransportEvents = new Set(
+    filteredTransports.flatMap((t) => {
+      const d = dispatchOrders.find((x) => x.id === t.dispatchOrderId);
+      return d ? [d.eventId] : [];
+    })
+  );
+  const filteredEventIds = new Set([...relatedDispatchEvents, ...relatedTransportEvents]);
+  const filteredEvents = filterWarehouseId || filterCategory
+    ? emergencyEvents.filter((e) => filteredEventIds.has(e.id))
+    : emergencyEvents;
+
+  return {
+    filteredInventory,
+    filteredDispatches,
+    filteredDispatchIds,
+    filteredTransports,
+    filteredReplenishments,
+    filteredWarehouses,
+    filteredEvents,
+    activeWarehouseIds,
+  };
 };
 
 router.get('/dashboard', (req: Request, res: Response) => {
@@ -124,47 +162,117 @@ router.get('/dashboard', (req: Request, res: Response) => {
       };
     });
 
+  const filterWarehouseNames = new Set(ctx.filteredWarehouses.map((w) => w.name));
+  const filterReplenishIds = new Set(ctx.filteredReplenishments.map((r) => r.id));
+  const filterDispatchTitles = new Set(ctx.filteredDispatches.map((d) => d.eventTitle));
+
   const filteredActivities: Activity[] = recentActivities.filter((act) => {
-    if (act.type === 'dispatch' || act.type === 'approval') {
-      const matched = ctx.filteredDispatches.some(
-        (o) => act.title.includes(o.id) || act.title.includes(o.eventTitle) || act.description.includes(o.id)
-      );
+    const titleUp = act.title.toUpperCase();
+    const descUp = act.description.toUpperCase();
+
+    if (act.type === 'dispatch') {
+      const matched = ctx.filteredDispatches.some((o) => {
+        const idUp = o.id.toUpperCase();
+        return (
+          titleUp.includes(idUp) ||
+          descUp.includes(idUp) ||
+          act.title.includes(o.eventTitle) ||
+          act.description.includes(o.eventTitle) ||
+          filterDispatchTitles.has(o.eventTitle) &&
+            o.items.some((it) => act.title.includes(it.materialName) || act.description.includes(it.materialName))
+        );
+      });
       if (!matched) return false;
+    }
+    if (act.type === 'approval') {
+      const dispatchMatched = ctx.filteredDispatches.some((o) => {
+        const idUp = o.id.toUpperCase();
+        return (
+          titleUp.includes(idUp) ||
+          descUp.includes(idUp) ||
+          act.title.includes(o.eventTitle) ||
+          o.approvals.some((a) => act.title.includes(a.approverName) || act.description.includes(a.approverName))
+        );
+      });
+      const replenishMatched = ctx.filteredReplenishments.some((r) => {
+        const idUp = r.id.toUpperCase();
+        return (
+          titleUp.includes(idUp) ||
+          descUp.includes(idUp) ||
+          r.approvals.some((a) => act.title.includes(a.approverName) || act.description.includes(a.approverName))
+        );
+      });
+      if (!dispatchMatched && !replenishMatched) return false;
     }
     if (act.type === 'replenishment') {
-      const matched = ctx.filteredReplenishments.some(
-        (o) => act.title.includes(o.id) || act.description.includes(o.id)
-      );
+      const matched = ctx.filteredReplenishments.some((r) => {
+        const idUp = r.id.toUpperCase();
+        return (
+          titleUp.includes(idUp) ||
+          descUp.includes(idUp) ||
+          act.title.includes(r.warehouseName) ||
+          r.items.some((it) => act.title.includes(it.materialName) || act.description.includes(it.materialName))
+        );
+      });
       if (!matched) return false;
     }
-    if (act.type === 'transport' || act.type === 'alert') {
-      const matched = ctx.filteredTransports.some(
-        (t) => act.title.includes(t.vehicleNo) || act.description.includes(t.vehicleNo) || act.title.includes(t.id)
-      );
-      if (!matched) {
-        if (act.type === 'alert' && act.title.includes('库存')) {
-          return ctx.filteredInventory.some((i) => i.availableQuantity < i.threshold);
-        }
-        return false;
-      }
+    if (act.type === 'transport') {
+      const matched = ctx.filteredTransports.some((t) => {
+        return (
+          titleUp.includes(t.vehicleNo.toUpperCase()) ||
+          descUp.includes(t.vehicleNo.toUpperCase()) ||
+          titleUp.includes(t.id.toUpperCase()) ||
+          descUp.includes(t.id.toUpperCase()) ||
+          filterWarehouseNames.has(t.origin.name)
+        );
+      });
+      if (!matched) return false;
     }
+    if (act.type === 'alert') {
+      const transportMatched = ctx.filteredTransports.some((t) => {
+        return (
+          titleUp.includes(t.vehicleNo.toUpperCase()) ||
+          descUp.includes(t.vehicleNo.toUpperCase()) ||
+          titleUp.includes(t.id.toUpperCase())
+        );
+      });
+      const inventoryAlert = act.title.includes('库存') &&
+        ctx.filteredInventory.some((i) => i.availableQuantity < i.threshold) &&
+        (filterWarehouseId
+          ? ctx.filteredInventory.some((i) => {
+              const w = warehouses.find((x) => x.id === i.warehouseId);
+              return w && (act.title.includes(w.name) || act.description.includes(w.name));
+            })
+          : true);
+      if (!transportMatched && !inventoryAlert) return false;
+    }
+
     return true;
   }).slice(0, 8);
+
+  const payload: DashboardStats & {
+    filteredWarehouses: typeof ctx.filteredWarehouses;
+    filteredTransports: typeof ctx.filteredTransports;
+    filteredEvents: typeof ctx.filteredEvents;
+  } = {
+    totalInventory,
+    totalWarehouses,
+    activeDispatches,
+    pendingApprovals,
+    activeAlerts,
+    turnoverRate,
+    dispatchProgress,
+    responseTime,
+    recentActivities: filteredActivities,
+    filteredWarehouses: ctx.filteredWarehouses,
+    filteredTransports: ctx.filteredTransports,
+    filteredEvents: ctx.filteredEvents,
+  };
 
   res.json({
     code: 200,
     message: 'success',
-    data: {
-      totalInventory,
-      totalWarehouses,
-      activeDispatches,
-      pendingApprovals,
-      activeAlerts,
-      turnoverRate,
-      dispatchProgress,
-      responseTime,
-      recentActivities: filteredActivities,
-    } as DashboardStats,
+    data: payload,
     timestamp: Date.now(),
   });
 });

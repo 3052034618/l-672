@@ -92,10 +92,20 @@ function StatCard({
   );
 }
 
-function MapVisualization() {
-  const warehouses = useAppStore((s) => s.warehouses);
-  const transports = useAppStore((s) => s.transportOrders);
-  const events = useAppStore((s) => s.events);
+function MapVisualization({
+  warehouses,
+  transports,
+  events,
+}: {
+  warehouses: { id: string; name: string; coordinates: { lat: number; lng: number } }[];
+  transports: {
+    id: string;
+    origin: { lat: number; lng: number; name: string };
+    destination: { lat: number; lng: number; name: string };
+    currentPosition: { lat: number; lng: number };
+  }[];
+  events: { id: string; title: string; coordinates: { lat: number; lng: number } }[];
+}) {
   const [tick, setTick] = useState(0);
 
   useEffect(() => {
@@ -282,6 +292,8 @@ export default function Dashboard() {
   const {
     dashboard,
     warehouses,
+    transportOrders,
+    events,
     filters,
     lastUpdate,
     setDashboard,
@@ -621,7 +633,11 @@ export default function Dashboard() {
           <div className="rounded-xl border border-white/10 bg-slate-900/50 p-5 backdrop-blur-sm">
             <h3 className="mb-4 text-base font-semibold text-white">实时地理态势</h3>
             <div className="h-72">
-              <MapVisualization />
+              <MapVisualization
+                warehouses={dashboard?.filteredWarehouses ?? warehouses}
+                transports={dashboard?.filteredTransports ?? transportOrders}
+                events={dashboard?.filteredEvents ?? events}
+              />
             </div>
           </div>
         </div>
